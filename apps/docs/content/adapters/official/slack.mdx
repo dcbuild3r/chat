@@ -164,6 +164,12 @@ bot.onNewMention(async (thread, message) => {
       description:
         "Use Slack's native streaming API for streamed posts. Set false to always stream via post-and-edit.",
     },
+    streamSegmentMaxAgeMs: {
+      type: "number",
+      default: "240000",
+      description:
+        "Finalize and continue native streams after this many milliseconds to stay below Slack's stream expiry.",
+    },
     feedbackButtons: {
       type: "boolean | SlackFeedbackButtonsOptions",
       description:
@@ -827,6 +833,8 @@ Threads without streaming context fall back to post-and-edit (`chat.update` delt
 ```typescript
 const slack = createSlackAdapter({ nativeStreaming: false });
 ```
+
+Native streams are finalized and continued in a new message after four minutes by default, before Slack's approximately five-minute stream expiry. Open code fences are closed and reopened across segments. Set `streamSegmentMaxAgeMs` to adjust the rollover threshold.
 
 #### Feedback buttons
 

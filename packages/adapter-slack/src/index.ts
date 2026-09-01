@@ -301,6 +301,8 @@ import type {
   SlackSuggestedPromptsContext,
 } from "./types";
 
+const STREAM_FENCE_PATTERN = /^(`{3,}|~{3,})/;
+
 export type {
   SlackAdapterConfig,
   SlackAdapterMode,
@@ -1114,6 +1116,7 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
   /** Normalized feedbackButtons config (`true` becomes `{}`). */
   protected readonly feedbackButtons?: SlackFeedbackButtonsOptions;
   protected readonly nativeStreaming: boolean;
+  protected readonly streamSegmentMaxAgeMs: number;
   /**
    * Latched when the workspace rejects native streaming with an error that
    * won't heal (e.g. `unknown_method` on GovSlack) so later streams skip the
@@ -1294,6 +1297,7 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
     this.suggestedPrompts = config.suggestedPrompts;
     this.loadingMessages = config.loadingMessages;
     this.nativeStreaming = config.nativeStreaming ?? true;
+    this.streamSegmentMaxAgeMs = config.streamSegmentMaxAgeMs ?? 240_000;
     if (config.feedbackButtons) {
       this.feedbackButtons =
         config.feedbackButtons === true ? {} : config.feedbackButtons;
@@ -5513,19 +5517,23 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
     this.logger.debug("Slack: starting stream", { channel, threadTs });
 
     const token = await this.getToken();
-    const streamer = this._client.chatStream({
-      channel,
-      thread_ts: threadTs,
-      ...(options?.recipientUserId && {
-        recipient_user_id: options.recipientUserId,
-      }),
-      ...(options?.recipientTeamId && {
-        recipient_team_id: options.recipientTeamId,
-      }),
-      ...(options?.taskDisplayMode && {
-        task_display_mode: options.taskDisplayMode,
-      }),
-    });
+    const createStreamer = () =>
+      this._client.chatStream({
+        channel,
+        thread_ts: threadTs,
+        ...(options?.recipientUserId && {
+          recipient_user_id: options.recipientUserId,
+        }),
+        ...(options?.recipientTeamId && {
+          recipient_team_id: options.recipientTeamId,
+        }),
+        ...(options?.taskDisplayMode && {
+          task_display_mode: options.taskDisplayMode,
+        }),
+      });
+    let streamer = createStreamer();
+    let streamSegmentStartedAt = Date.now();
+    let rotatedResult: Awaited<ReturnType<typeof streamer.stop>> | undefined;
 
     let lastAppended = "";
     const renderer = new StreamingMarkdownRenderer({
@@ -5541,6 +5549,7 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
     let resolvedCommitted = "";
     let resolvedSourceDone = 0;
     let insideResolvedFence = false;
+    let openFence: { marker: string; opening: string } | undefined;
 
     const isFenceLine = (line: string): boolean => {
       const trimmed = line.trimStart();
@@ -5574,7 +5583,17 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
           );
         }
         if (newlineAt !== -1 && fenceLine) {
-          insideResolvedFence = !insideResolvedFence;
+          if (insideResolvedFence) {
+            insideResolvedFence = false;
+            openFence = undefined;
+          } else {
+            const opening = committable.slice(lineStart, lineEnd).trimStart();
+            const marker = opening.match(STREAM_FENCE_PATTERN)?.[1];
+            if (marker) {
+              insideResolvedFence = true;
+              openFence = { marker, opening: opening.trimEnd() };
+            }
+          }
         }
         resolvedSourceDone = lineEnd;
       }
@@ -5639,6 +5658,31 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
       );
     };
 
+    const rotateExpiredSegment = async (): Promise<void> => {
+      if (
+        !fallback.nativeRendered ||
+        Date.now() - streamSegmentStartedAt < this.streamSegmentMaxAgeMs
+      ) {
+        return;
+      }
+
+      if (openFence) {
+        await streamer.append({
+          markdown_text: `\n${openFence.marker}`,
+          token,
+        });
+      }
+      rotatedResult = await streamer.stop({ token });
+      streamer = createStreamer();
+      streamSegmentStartedAt = Date.now();
+      if (openFence) {
+        await streamer.append({
+          markdown_text: `${openFence.opening}\n`,
+          token,
+        });
+      }
+    };
+
     /**
      * Flush committed renderer text: as a mention-resolved markdown_text
      * delta on the native stream, or as a throttled post/edit in fallback
@@ -5650,6 +5694,7 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
         await flushFallback(force);
         return;
       }
+      await rotateExpiredSegment();
       await resolveCommitted(renderer.getCommittableText());
       const delta = resolvedCommitted.slice(lastAppended.length);
       if (delta.length === 0) {
@@ -5793,14 +5838,15 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
       await this.endTyping(threadId, options?.sessionStatus ?? "active");
       return fallback.message;
     }
-    const messageTs = (result.message?.ts ?? result.ts) as string;
+    const finalResult = result ?? rotatedResult;
+    const messageTs = (finalResult.message?.ts ?? finalResult.ts) as string;
 
     this.logger.debug("Slack: stream complete", { messageId: messageTs });
 
     return {
       id: messageTs,
       threadId,
-      raw: result,
+      raw: finalResult,
     };
   }
 
@@ -6997,6 +7043,7 @@ export function createSlackAdapter(config?: SlackAdapterConfig): SlackAdapter {
     loadingMessages: config?.loadingMessages,
     logger: config?.logger ?? new ConsoleLogger("info").child("slack"),
     nativeStreaming: config?.nativeStreaming,
+    streamSegmentMaxAgeMs: config?.streamSegmentMaxAgeMs,
     sessionTitle: config?.sessionTitle,
     suggestedPrompts: config?.suggestedPrompts,
     socketForwardingSecret:

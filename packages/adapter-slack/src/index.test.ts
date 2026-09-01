@@ -10467,6 +10467,50 @@ describe("stream with empty threadTs", () => {
       expect.objectContaining({ token: "xoxb-test-token" })
     );
   });
+
+  it("rotates expired native streams and preserves an open code fence", async () => {
+    let now = 0;
+    const dateNow = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const adapter = createSlackAdapter({
+      botToken: "xoxb-test-token",
+      signingSecret: "test-signing-secret",
+      logger: mockLogger,
+      streamSegmentMaxAgeMs: 100,
+    });
+    const segments = Array.from({ length: 2 }, (_, index) => ({
+      append: vi.fn().mockResolvedValue({ ok: true }),
+      stop: vi.fn().mockResolvedValue({
+        ok: true,
+        ts: `1234567890.${index}`,
+      }),
+    }));
+    const chatStream = vi
+      .fn()
+      .mockImplementation(() => segments[chatStream.mock.calls.length - 1]);
+    mockClientMethod(adapter, "chatStream", chatStream);
+
+    async function* longStream() {
+      yield "```ts\nconst first = true;\n";
+      now = 101;
+      yield "const second = true;\n```";
+    }
+
+    await adapter.stream("slack:D123:1234567890.000000", longStream());
+
+    expect(chatStream).toHaveBeenCalledTimes(2);
+    expect(segments[0]?.stop).toHaveBeenCalledWith({
+      token: "xoxb-test-token",
+    });
+    expect(segments[0]?.append).toHaveBeenLastCalledWith({
+      markdown_text: "\n```",
+      token: "xoxb-test-token",
+    });
+    expect(segments[1]?.append).toHaveBeenNthCalledWith(1, {
+      markdown_text: "```ts\n",
+      token: "xoxb-test-token",
+    });
+    dateNow.mockRestore();
+  });
 });
 
 describe("native streaming fallback", () => {
