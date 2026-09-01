@@ -1165,16 +1165,14 @@ export class LinearAdapter
         return null;
       }
 
-      if (!agentSession.comment) {
-        this.logger.warn("Missing comment for agent session", {
-          agentSessionId: payload.agentSession.id,
-        });
-        return null;
-      }
+      const sessionComment = agentSession.comment ?? {
+        id: `agent-session-${agentSession.id}`,
+        body: "",
+      };
 
       const commentData: LinearCommentData = {
-        id: agentSession.comment.id,
-        body: agentSession.comment.body,
+        id: sessionComment.id,
+        body: sessionComment.body,
         issueId,
         user: agentSession.creator
           ? {
@@ -1187,9 +1185,9 @@ export class LinearAdapter
             }
           : {
               type: "bot",
-              id: this.botUserId,
-              displayName: this.userName,
-              fullName: this.userName,
+              id: "linear-automation",
+              displayName: "Linear automation",
+              fullName: "Linear automation",
               email: undefined,
               avatarUrl: undefined,
             },
@@ -2298,12 +2296,16 @@ export class LinearAdapter
     return new Message<LinearRawMessage>({
       id: raw.comment.id,
       isMention: raw.kind === "agent_session_comment", // Agent session comments are treated as mentions as they directly target the bot
-      threadId: this.encodeThreadId({
-        issueId: raw.comment.issueId,
-        commentId: raw.comment.id,
-        agentSessionId:
-          raw.kind === "agent_session_comment" ? raw.agentSessionId : undefined,
-      }),
+      threadId:
+        raw.kind === "agent_session_comment"
+          ? this.encodeThreadId({
+              issueId: raw.comment.issueId,
+              agentSessionId: raw.agentSessionId,
+            })
+          : this.encodeThreadId({
+              issueId: raw.comment.issueId,
+              commentId: raw.comment.id,
+            }),
       text,
       formatted,
       author: {
