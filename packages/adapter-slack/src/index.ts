@@ -780,6 +780,7 @@ export interface SlackEvent {
   /** Rich text blocks containing structured elements (links, mentions, etc.) */
   blocks?: SlackMessageBlock[];
   bot_id?: string;
+  bot_profile?: { user_id?: string };
   channel?: string;
   /** Channel type: "channel", "group", "mpim", or "im" (DM) */
   channel_type?: string;
@@ -4228,7 +4229,8 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
       formatted,
       raw: event,
       author: {
-        userId: event.user || event.bot_id || "unknown",
+        userId:
+          event.user || event.bot_profile?.user_id || event.bot_id || "unknown",
         userName,
         fullName,
         email,
@@ -6201,7 +6203,8 @@ export class SlackAdapter implements Adapter<SlackThreadId, unknown> {
       formatted,
       raw: event,
       author: {
-        userId: event.user || event.bot_id || "unknown",
+        userId:
+          event.user || event.bot_profile?.user_id || event.bot_id || "unknown",
         userName,
         fullName,
         isBot: !!event.bot_id,

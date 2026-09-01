@@ -1191,6 +1191,23 @@ describe("parseMessage", () => {
     expect(message.author.isBot).toBe(true);
   });
 
+  it("uses the bot user ID instead of the app bot ID", () => {
+    const event = {
+      type: "message",
+      bot_id: "B123",
+      bot_profile: { user_id: "U123" },
+      channel: "C456",
+      text: "Bot message",
+      ts: "1234567890.123456",
+      subtype: "bot_message",
+    };
+
+    const message = adapter.parseMessage(event);
+
+    expect(message.author.userId).toBe("U123");
+    expect(message.author.isBot).toBe(true);
+  });
+
   it("marks USLACK messages as system-authored", () => {
     const event = {
       type: "message",
