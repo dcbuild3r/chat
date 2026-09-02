@@ -1341,6 +1341,31 @@ describe("handleWebhook - agent session events", () => {
     expect(message.text).toBe("Can you elaborate?");
   });
 
+  it("routes prompted events without a source comment", async () => {
+    const logger = createMockLogger();
+    const adapter = createWebhookAdapter(logger, "agent-sessions");
+    const chat = createMockChatInstance({ state: createMockState(), logger });
+    (adapter as unknown as { chat: typeof chat }).chat = chat;
+
+    const payload = createAgentSessionPayload({
+      action: "prompted",
+      activityBody: "Can you elaborate?",
+      activityId: "agent-activity-without-comment",
+      sourceCommentId: null,
+    });
+    const body = JSON.stringify(payload);
+    const response = await adapter.handleWebhook(
+      buildWebhookRequest(body, signPayload(body))
+    );
+
+    expect(response.status).toBe(200);
+    expect(chat.processMessage).toHaveBeenCalledTimes(1);
+    const message = chat.processMessage.mock.calls[0][2];
+    expect(message.id).toBe("agent-activity-without-comment");
+    expect(message.text).toBe("Can you elaborate?");
+    expect(message.threadId).toBe("linear:issue-123:s:agent-session-1");
+  });
+
   it("uses an automation author when a created session has no creator", async () => {
     const logger = createMockLogger();
     const adapter = createWebhookAdapter(logger, "agent-sessions");
@@ -1380,7 +1405,7 @@ describe("handleWebhook - agent session events", () => {
     expect(chat.processMessage).toHaveBeenCalledTimes(1);
     const message = chat.processMessage.mock.calls[0][2];
     expect(message.id).toBe("agent-session-agent-session-1");
-    expect(message.text).toBe("");
+    expect(message.text).toBe("Issue TEST-1\n\n@get-bot Hello there");
     expect(message.threadId).toBe("linear:issue-123:s:agent-session-1");
   });
 
@@ -2320,6 +2345,104 @@ describe("fetchMessages", () => {
     expect(
       expectAgentSessionCommentRawMessage(result.messages[1].raw).agentSessionId
     ).toBe("session-789");
+  });
+
+  it("should fetch activities for agent sessions without a root comment", async () => {
+    const adapter = createWebhookAdapter(undefined, "agent-sessions");
+    setDefaultOrganizationId(adapter, "org-xyz");
+    setBotUserId(adapter, "bot-id");
+
+    const activities = vi.fn().mockResolvedValue({
+      nodes: [
+        {
+          id: "response-activity",
+          sourceCommentId: undefined,
+          userId: "bot-id",
+          createdAt: new Date("2025-06-01T10:02:00.000Z"),
+          updatedAt: new Date("2025-06-01T10:02:00.000Z"),
+          content: { type: "response", body: "Agent response" },
+          user: Promise.resolve({
+            id: "bot-id",
+            displayName: "Test Bot",
+            name: "Test Bot",
+          }),
+        },
+        {
+          id: "prompt-activity",
+          sourceCommentId: undefined,
+          userId: "user-1",
+          createdAt: new Date("2025-06-01T10:00:00.000Z"),
+          updatedAt: new Date("2025-06-01T10:00:00.000Z"),
+          content: { type: "prompt", body: "User prompt" },
+          user: Promise.resolve({
+            id: "user-1",
+            displayName: "Alice",
+            name: "Alice Smith",
+          }),
+        },
+        {
+          id: "action-activity",
+          sourceCommentId: undefined,
+          userId: "bot-id",
+          createdAt: new Date("2025-06-01T10:01:00.000Z"),
+          updatedAt: new Date("2025-06-01T10:01:00.000Z"),
+          content: {
+            type: "action",
+            action: "Searching",
+            parameter: "Chat SDK",
+            result: "Found documentation",
+          },
+          user: Promise.resolve({
+            id: "bot-id",
+            displayName: "Test Bot",
+            name: "Test Bot",
+          }),
+        },
+      ],
+      pageInfo: {
+        hasNextPage: false,
+        hasPreviousPage: false,
+        endCursor: null,
+        startCursor: null,
+      },
+    });
+    const mockLinearClient = {
+      agentSession: vi.fn().mockResolvedValue({
+        id: "session-789",
+        issueId: "issue-abc",
+        url: "https://linear.app/session/session-789",
+        comment: Promise.resolve(undefined),
+        activities,
+      }),
+    };
+    (
+      adapter as unknown as { linearClient: typeof mockLinearClient }
+    ).linearClient = mockLinearClient as never;
+
+    const result = await adapter.fetchMessages(
+      "linear:issue-abc:s:session-789"
+    );
+
+    expect(activities).toHaveBeenCalledWith({ last: 50 });
+    expect(result.messages.map((message) => message.text)).toEqual([
+      "User prompt",
+      "Searching: Chat SDK\nFound documentation",
+      "Agent response",
+    ]);
+    expect(result.messages.map((message) => message.id)).toEqual([
+      "prompt-activity",
+      "action-activity",
+      "response-activity",
+    ]);
+    expect(result.messages[0].author.isBot).toBe(false);
+    expect(result.messages[0].author.isMe).toBe(false);
+    expect(result.messages[1].author.isBot).toBe(true);
+    expect(result.messages[1].author.isMe).toBe(true);
+    expect(
+      result.messages.every(
+        (message) => message.threadId === "linear:issue-abc:s:session-789"
+      )
+    ).toBe(true);
   });
 
   it("should surface root comment lookup failures", async () => {
