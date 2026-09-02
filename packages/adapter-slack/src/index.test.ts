@@ -8659,6 +8659,12 @@ describe("isMessageFromSelf", () => {
     _botId: string | undefined;
     _botUserId: string | undefined;
     isMessageFromSelf: (event: Record<string, unknown>) => boolean;
+    requestContext: {
+      run<T>(
+        store: { token: string; botUserId?: string },
+        callback: () => T
+      ): T;
+    };
   }
 
   it("matches by bot user ID", () => {
@@ -8671,6 +8677,38 @@ describe("isMessageFromSelf", () => {
     const result = (
       adapter as unknown as AdapterWithPrivates
     ).isMessageFromSelf({ user: "U_BOT_123" });
+    expect(result).toBe(true);
+  });
+
+  it("matches by bot profile user ID", () => {
+    const adapter = createSlackAdapter({
+      botToken: "xoxb-test",
+      signingSecret: "s",
+      logger: mockLogger,
+    });
+    (adapter as unknown as AdapterWithPrivates)._botUserId = "U_BOT_123";
+    const result = (
+      adapter as unknown as AdapterWithPrivates
+    ).isMessageFromSelf({
+      bot_id: "B_BOT_456",
+      bot_profile: { user_id: "U_BOT_123" },
+    });
+    expect(result).toBe(true);
+  });
+
+  it("matches request bot user ID by bot profile", () => {
+    const adapter = createSlackAdapter({
+      signingSecret: "s",
+      logger: mockLogger,
+    }) as unknown as AdapterWithPrivates;
+    const result = adapter.requestContext.run(
+      { token: "xoxb-test", botUserId: "U_BOT_123" },
+      () =>
+        adapter.isMessageFromSelf({
+          bot_id: "B_BOT_456",
+          bot_profile: { user_id: "U_BOT_123" },
+        })
+    );
     expect(result).toBe(true);
   });
 
